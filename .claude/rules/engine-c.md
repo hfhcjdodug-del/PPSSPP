@@ -1,0 +1,137 @@
+---
+paths:
+  - "src/client/**"
+  - "src/common/**"
+  - "src/game/**"
+  - "src/server/**"
+---
+
+# id's engine C (`client/`, `common/`, `game/`, `server/`)
+
+## Editing rules
+
+- Keep id's code as close to untouched as possible. Platform work belongs in `src/ps2`
+  behind a seam. When an engine change is unavoidable, keep it minimal and tag it:
+  `// [PS2_QUAKE]: <why>` (about 180 tags exist; follow their style).
+- This code is C89 (`-std=gnu89 -fcommon`) with a lenient warning set, built with
+  `-fno-strict-aliasing -fsingle-precision-constant`. None of the backend's C++ style or
+  `-Werror` rules apply here.
+- **No double FPU on the EE.** Unsuffixed constants are made float by the flag, and libm calls
+  are redirected by `ps2/math/math_c.h` (via `q_shared.h`). Don't add `double` math or
+  `<math.h>` double calls to engine code.
+- `Sys_Error` is not `[[noreturn]]`, and its declaration in the game header stays as it is.
+- Seams the backend implements: `refexport_t` (the renderer), `Sys_*`, `NET_*` (loopback
+  only), `IN_*` (plus the four `IN_Rumble*` hooks in cl_fx.c, cl_parse.c, cl_ents.c and
+  cl_scrn.c), `SNDDMA_*`, `CDAudio_*`, `Sys_Save*` (`q_common.h`; where the engine calls them,
+  in sv_ccmds.c and menu.c, is listed in [save-games.md](save-games.md)).
+- A changed `.c` here needs only `make`. There is no separate engine build.
+
+## Known engine quirks and bugs
+
+- **`COM_Parse` writes `com_token[MAX_TOKEN_CHARS] = 0`, one byte past the array**, after
+  truncating a 128+ char token. It corrupts whatever comes next (it hit `_BigShort`).
+  It is unfixed and was reported to the user. Avoid long quoted tokens in scripts.
+- `Sys_FindFirst` is a stub on this port (always nullptr), so `FS_ExecAutoexec` never runs
+  `autoexec.cfg`, and anything else that enumerates files gets nothing.
+- **`SCR_PlayCinematic` switched the mixer to the cinematic's rate** (`s_khz` != `cin.s_rate/1000`
+  → `CL_Snd_Restart_f`), then back in `SCR_StopCinematic`. With this port's 22 kHz default that fired
+  for the eight 11 kHz unit-end cinematics (`eou1_`-`eou8_`; `ntro`, `end` and `idlog` are 22 kHz),
+  and each restart is `S_Shutdown` (every loaded sound freed) plus `CL_RegisterSounds` (the temp-entity
+  sounds reloaded: 2.8 s from a USB stick, 1.7 s more at the end). Since 2026-10-26 the test is `<`,
+  up only, as id's own comment says; `S_RawSamples` resamples a lower rate into the mixer anyway.
+- **`S_IssuePlaysound` dereferenced `S_LoadSound`'s result unchecked** (a crash for any sound that
+  failed to load at issue time). Since 2026-10-26 the load comes before `S_PickChannel`, and a NULL
+  requeues the playsound 10 ms on while its sound is still in the background loader's hands and
+  `paintedtime` is under its new `deadline` (half a second past `begin`), else drops it.
+- **Mid-level sound loads are asynchronous** since 2026-10-26: `S_LoadSound` outside registration
+  hands the file to `PS2_SoundLoadAsync` (`ps2/audio/sound_load.h`) and returns NULL while
+  `PS2_SoundLoadPending`; the pump (`ps2/fs/aio_pump.h`, top of `PS2_BeginFrame`) finishes it with
+  `S_FinishLoadSound`, the half of `S_LoadSound` after the read. `S_StartSound` queues a playsound
+  for a pending sound instead of dropping it. `S_BeginRegistration` and `S_Shutdown` drain first.
+  Level loads (`s_registering`, `S_EndRegistration`) stay synchronous.
+- `wait` runs twice per frame (`Cbuf_Execute` in `Qcommon_Frame` and `CL_SendCommand`).
+- Quake II has no `nomonsters`. `deathmatch` and `cheats` are `CVAR_LATCH`, and `sv_init.c`
+  forces `maxclients` to 8 under deathmatch.
+- The client frame interleaves **2D → 3D → 2D** (`SCR_UpdateScreen`), with no hook at the
+  boundaries. The renderer handles this itself (see `gs-renderer.md`).
+- **Cvars nothing reads on this port:** `freelook`, `lookspring`, `lookstrafe`, `m_yaw`,
+  `m_forward` and `m_side` were read only by win32's mouse and joystick code (in_win.c), and
+  `s_primary` only by snd_win.c. They are still registered and archived, so config.cfg keeps
+  them. The right stick reads `sensitivity` and `m_pitch`'s sign instead (input.cpp). The
+  Options page has no rows for them since 2026-10-23, nor for sound quality, whose callback
+  does nothing (`UpdateSoundQualityFunc`). The controls page lost its mouse look and keyboard
+  look rows (`+mlook`, `+klook`) on 2026-10-25 for the same reason, and lists gamepad buttons
+  only, by the names input.cpp's table gives them (`IN_GamepadKeyName`); its grab is answered
+  with each button's game key (`M_IsGrabbingKey`), since the menu keys the pad otherwise sends
+  (Enter for cross and square, Escape for circle) would bind the wrong key.
+- **Every level load asks for files baseq2 doesn't have.** `CL_RegisterTEntModels` (cl_tent.c)
+  registers `models/ctf/segment`, `objects/r_explode2`, `proj/lightning`, `proj/beam` and
+  `proj/widowbeam`, which only CTF and the mission packs ship. id's shipped demos also carry bad
+  data: `demo1.dm2` names `weapons/v_shotg/flash2/tris.md2` (no `models/` prefix), and both demos
+  give the player the skin `male/skin`, so the attract loop asks for `players/male/skin.pcx` and
+  `skin_i.pcx`. ref_gl failed these silently. Ours print `Unable to load model` and
+  `Can't load PCX file`, both `Com_DPrintf` (developer only) since 2026-11-04.
+- **`RegisterSkin`/`RegisterPic` never return NULL on this port**: a missing file comes back as
+  the checkerboard (`FindTextureOrPlaceholder`, ref.cpp). That leaves `CL_LoadClientinfo`'s
+  fallbacks dead: the "skin missing, use `grunt.pcx`" step and the "anything missing, use
+  `cl.baseclientinfo`" step. The demo player gets the checkerboard skin and icon, where ref_gl
+  gave grunt. In the demos that's never seen (no model drawn for the viewer), but a multiplayer
+  client with a skin we lack would show it. Left as is on 2026-11-04. A fix returns NULL for a
+  missing file, after checking that every skin and pic draw site handles NULL.
+
+## Level loading and registration
+
+- `CL_PrepRefresh` does free-before-load: it first runs its registration calls in touch-only
+  mode (`re.SetRegistrationTouchOnly`), then `re.FreeUnregistered`, then the real pass. This
+  keeps the old level's unused assets from overlapping the new level's in memory (see
+  `memory-budget.md`).
+- Every view weapon is preloaded in `CL_RegisterTEntModels` (id only did three), and player
+  weapon fire sounds are preloaded with the level. Mid-level loads drop frames, so prefer
+  preloading for anything that appears at a predictable moment.
+- `CDAudio_Play` is called by `CL_PrepRefresh` when loading is done. It is a useful event
+  hook for scripted tests.
+- **While the loading plaque is up, `SCR_UpdateScreen` returns at once** (`cls.disable_screen`).
+  So `CL_PrepRefresh`'s per-model `SCR_UpdateScreen` calls draw nothing. The plaque comes down
+  in `SCR_EndLoadingPlaque` (`CL_ParseFrame`'s first valid frame of a new servercount, once
+  prepped), or after a timeout (150 s on this port, 120 s in id's code: a USB load can take
+  longer). The PS2 loading screen hangs off those calls and off `FS_LoadFile`/`FS_FOpenFile`
+  (`ps2/renderer/loading_screen.h`).
+- **`FS_LocateFile` (filesys.c, declared in q_common.h) finds a file without reading it**, for the
+  background loader (`ps2/fs/async_io.h`): a `.pak` gets a second descriptor (`pack_t::asyncFd`,
+  opened on first use, closed in `FS_SetGamedir` after `PS2_AsyncIoDrain`), a pkz entry comes back
+  as its compressed range on the pack's reader descriptor (`PS2_PkzLocate`), a loose file as its
+  own stream's `fileno`, held open until `FS_ReleaseLocation`. Missing is -1 as everywhere else;
+  found with `fd` -1 means "load synchronously". It notes `FLOG#open` and `FsIo` like a load.
+- **filesys.c loads `pakN.pkz` in place of `pakN.pak`** when both exist, through
+  `ps2/fs/pkz_pack.h`. For a pkz, `pack_t.handle` is NULL and `packfile_t.filepos` is the
+  file's index in the pkz, not an offset. Its `FS_FOpenFile` streams start at position 0 for a
+  deflated file (an `fopencookie` stream), so loaders must take `ftell` at open and seek
+  relative to it, as the BSP and MD2 loaders do. Nothing may seek past a file's end, or read
+  past it expecting the next file's bytes.
+- The I/O log (`PS2_QUAKE_IO_LOG`, `ps2/debug/io_log.h`, ships 0) times every file call of a
+  load: hooks around `FS_FOpenFile`, `FS_Read`, `FS_LoadFile` and `FS_FCloseFile`. Raw
+  `fread` on a stream (the demo and cinematic readers) isn't seen. The frame log's `Cinematic`
+  column (`PS2_PROF_CINEMATIC` in `SCR_RunCinematic`) times a cinematic frame's reads and decode.
+- **A `.cin` or `.dm2` opened through `FS_FOpenFile` is a read-ahead stream** since 2026-10-26
+  (`FS_FOpenFileImpl` → `PS2_WantsReadAheadStream`/`PS2_OpenReadAheadStream`, `ps2/fs/
+  readahead_stream.h`): an unbuffered `fopencookie` stream over a ring the background loader fills,
+  unless the file is a deflated pkz entry, `ps2_readahead_kb` is 0 or the ring can't be allocated,
+  when it gets the plain stdio stream as before. cl_cin.c and sv_send.c are untouched: `fread`,
+  `FS_Read`, `feof` and `fclose` work on it, and `FsIo` on a cinematic row is now a sleep for a
+  chunk the loader hasn't landed, not a refill.
+- The load trace (`PS2_LOAD_TRACE`, `ps2/debug/load_trace.h`) covers the path from
+  `SCR_FinishCinematic` to the first `R_EndFrame` after registration. `PS2_QUAKE_LOAD_TRACE`
+  ships as 0. To debug a load, pass `-DPS2_QUAKE_LOAD_TRACE=1` in `CONFIG_DEFS` (clear
+  `build/<config>/src` first), or set it in the header and back to 0 before committing.
+
+## Save game duty
+
+The game saves function and `mmove_t` pointers as FNV-1a hashes of their names, through
+tables generated from the game objects at build time
+(`src/tools/scripts/gen_save_tables.py` → `build/<cfg>/gen/g_save_tables.c`). It runs `nm`
+over the game objects and a `^mmove_t` regex over the sources, skipping `#if 0` blocks.
+`G_SaveFingerprint` covers struct sizes, field tables, `itemlist` and `SAVE_FORMAT_VERSION`.
+
+- After touching `g_save.c` or any saved game struct, run `ps2_testsaves 1`.
+- **Bump `SAVE_FORMAT_VERSION` in `g_save.c`** for layout changes the fingerprint can't see,
+  such as a field whose meaning changed but whose size didn't.

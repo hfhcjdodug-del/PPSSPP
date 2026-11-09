@@ -1,0 +1,1026 @@
+/*
+Copyright (C) 1997-2001 Id Software, Inc.
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
+//
+// Definitions common between client and server, but not game.dll
+//
+#ifndef Q_COMMON_H
+#define Q_COMMON_H
+
+#include "game/q_shared.h"
+
+// [PS2_QUAKE]: Original Quake2 source code release starts at 3.19 and so does
+// PS2 Quake2's first release. Subsequent PS2 releases bump the minor version.
+#define VERSION 3.22
+#define BASEDIRNAME "baseq2"
+
+#ifdef WIN32
+
+#ifdef NDEBUG
+#define BUILDSTRING "Win32 RELEASE"
+#else
+#define BUILDSTRING "Win32 DEBUG"
+#endif
+
+#ifdef _M_IX86
+#define CPUSTRING "x86"
+#elif defined _M_ALPHA
+#define CPUSTRING "AXP"
+#endif
+
+#elif defined __linux__
+
+#define BUILDSTRING "Linux"
+
+#ifdef __i386__
+#define CPUSTRING "i386"
+#elif defined __alpha__
+#define CPUSTRING "axp"
+#else
+#define CPUSTRING "Unknown"
+#endif
+
+#elif defined __sun__
+
+#define BUILDSTRING "Solaris"
+
+#ifdef __i386__
+#define CPUSTRING "i386"
+#else
+#define CPUSTRING "sparc"
+#endif
+
+#elif defined PS2_QUAKE
+
+// [PS2_QUAKE]: 2015-10-26
+// So the console prints a proper version string, instead of "NON-WIN32"
+#define BUILDSTRING "PS2-QUAKE"
+#define CPUSTRING   "EE-MIPS-R5900-LE"
+
+#else // !WIN32
+
+#define BUILDSTRING "NON-WIN32"
+#define CPUSTRING   "NON-WIN32"
+
+#endif
+
+#if !defined(RESTRICT_DEFINED) && !defined(restrict)
+#define restrict __restrict
+#define RESTRICT_DEFINED 1
+#endif // RESTRICT_DEFINED
+
+//============================================================================
+
+typedef struct sizebuf_s
+{
+    qboolean allowoverflow; // if false, do a Com_Error
+    qboolean overflowed;    // set to true if the buffer size failed
+    byte * data;
+    int maxsize;
+    int cursize;
+    int readcount;
+} sizebuf_t;
+
+void SZ_Init(sizebuf_t * buf, byte * data, int length);
+void SZ_Clear(sizebuf_t * buf);
+void * SZ_GetSpace(sizebuf_t * buf, int length);
+void SZ_Write(sizebuf_t * buf, const void * data, int length);
+void SZ_Print(sizebuf_t * buf, const char * data); // strcats onto the sizebuf
+
+//============================================================================
+
+struct usercmd_s;
+struct entity_state_s;
+
+void MSG_WriteChar(sizebuf_t * sb, int c);
+void MSG_WriteByte(sizebuf_t * sb, int c);
+void MSG_WriteShort(sizebuf_t * sb, int c);
+void MSG_WriteLong(sizebuf_t * sb, int c);
+void MSG_WriteFloat(sizebuf_t * sb, float f);
+void MSG_WriteString(sizebuf_t * sb, char * s);
+void MSG_WriteCoord(sizebuf_t * sb, float f);
+void MSG_WritePos(sizebuf_t * sb, vec3_t pos);
+void MSG_WriteAngle(sizebuf_t * sb, float f);
+void MSG_WriteAngle16(sizebuf_t * sb, float f);
+void MSG_WriteDeltaUsercmd(sizebuf_t * sb, struct usercmd_s * from, struct usercmd_s * cmd);
+void MSG_WriteDeltaEntity(struct entity_state_s * from, struct entity_state_s * to, sizebuf_t * msg, qboolean force, qboolean newentity);
+void MSG_WriteDir(sizebuf_t * sb, vec3_t vector);
+void MSG_BeginReading(sizebuf_t * sb);
+int MSG_ReadChar(sizebuf_t * sb);
+int MSG_ReadByte(sizebuf_t * sb);
+int MSG_ReadShort(sizebuf_t * sb);
+int MSG_ReadLong(sizebuf_t * sb);
+float MSG_ReadFloat(sizebuf_t * sb);
+char * MSG_ReadString(sizebuf_t * sb);
+char * MSG_ReadStringLine(sizebuf_t * sb);
+float MSG_ReadCoord(sizebuf_t * sb);
+void MSG_ReadPos(sizebuf_t * sb, vec3_t pos);
+float MSG_ReadAngle(sizebuf_t * sb);
+float MSG_ReadAngle16(sizebuf_t * sb);
+void MSG_ReadDeltaUsercmd(sizebuf_t * sb, struct usercmd_s * from, struct usercmd_s * cmd);
+void MSG_ReadDir(sizebuf_t * sb, vec3_t vector);
+void MSG_ReadData(sizebuf_t * sb, void * buffer, int size);
+
+//============================================================================
+
+extern qboolean bigendien;
+
+//============================================================================
+
+int COM_Argc(void);
+char * COM_Argv(int arg); // range and null checked
+void COM_ClearArgv(int arg);
+int COM_CheckParm(const char * parm);
+void COM_AddParm(char * parm);
+
+void COM_Init(void);
+void COM_InitArgv(int argc, char ** argv);
+
+char * Q_CopyString(const char * in); // strdup replaces that used Z_Malloc.
+
+//============================================================================
+
+void Info_Print(char * s);
+
+/* crc.h */
+void CRC_Init(unsigned short * crcvalue);
+void CRC_ProcessByte(unsigned short * crcvalue, byte data);
+unsigned short CRC_Value(unsigned short crcvalue);
+unsigned short CRC_Block(byte * start, int count);
+
+/*
+==============================================================
+
+PROTOCOL
+
+==============================================================
+*/
+
+// protocol.h -- communications protocols
+
+#define PROTOCOL_VERSION 34
+
+//=========================================
+
+#define PORT_MASTER 27900
+#define PORT_CLIENT 27901
+#define PORT_SERVER 27910
+
+//=========================================
+
+#define UPDATE_BACKUP 16 // copies of entity_state_t to keep buffered must be power of two
+#define UPDATE_MASK (UPDATE_BACKUP - 1)
+
+//==================
+// the svc_strings[] array in cl_parse.c should mirror this
+//==================
+
+//
+// server to client
+//
+enum svc_ops_e
+{
+    svc_bad,
+
+    // these ops are known to the game dll
+    svc_muzzleflash,
+    svc_muzzleflash2,
+    svc_temp_entity,
+    svc_layout,
+    svc_inventory,
+
+    // the rest are private to the client and server
+    svc_nop,
+    svc_disconnect,
+    svc_reconnect,
+    svc_sound,        // <see code>
+    svc_print,        // [byte] id [string] null terminated string
+    svc_stufftext,    // [string] stuffed into client's console buffer, should be \n terminated
+    svc_serverdata,   // [long] protocol ...
+    svc_configstring, // [short] [string]
+    svc_spawnbaseline,
+    svc_centerprint,         // [string] to put in center of the screen
+    svc_download,            // [short] size [size bytes]
+    svc_playerinfo,          // variable
+    svc_packetentities,      // [...]
+    svc_deltapacketentities, // [...]
+    svc_frame
+};
+
+//==============================================
+
+//
+// client to server
+//
+enum clc_ops_e
+{
+    clc_bad,
+    clc_nop,
+    clc_move,     // [[usercmd_t]
+    clc_userinfo, // [[userinfo string]
+    clc_stringcmd // [string] message
+};
+
+//==============================================
+
+// plyer_state_t communication
+
+#define PS_M_TYPE (1 << 0)
+#define PS_M_ORIGIN (1 << 1)
+#define PS_M_VELOCITY (1 << 2)
+#define PS_M_TIME (1 << 3)
+#define PS_M_FLAGS (1 << 4)
+#define PS_M_GRAVITY (1 << 5)
+#define PS_M_DELTA_ANGLES (1 << 6)
+
+#define PS_VIEWOFFSET (1 << 7)
+#define PS_VIEWANGLES (1 << 8)
+#define PS_KICKANGLES (1 << 9)
+#define PS_BLEND (1 << 10)
+#define PS_FOV (1 << 11)
+#define PS_WEAPONINDEX (1 << 12)
+#define PS_WEAPONFRAME (1 << 13)
+#define PS_RDFLAGS (1 << 14)
+
+//==============================================
+
+// user_cmd_t communication
+
+// ms and light always sent, the others are optional
+#define CM_ANGLE1 (1 << 0)
+#define CM_ANGLE2 (1 << 1)
+#define CM_ANGLE3 (1 << 2)
+#define CM_FORWARD (1 << 3)
+#define CM_SIDE (1 << 4)
+#define CM_UP (1 << 5)
+#define CM_BUTTONS (1 << 6)
+#define CM_IMPULSE (1 << 7)
+
+//==============================================
+
+// a sound without an ent or pos will be a local only sound
+#define SND_VOLUME (1 << 0)      // a byte
+#define SND_ATTENUATION (1 << 1) // a byte
+#define SND_POS (1 << 2)         // three coordinates
+#define SND_ENT (1 << 3)         // a short 0-2: channel, 3-12: entity
+#define SND_OFFSET (1 << 4)      // a byte, msec offset from frame start
+
+#define DEFAULT_SOUND_PACKET_VOLUME 1.0
+#define DEFAULT_SOUND_PACKET_ATTENUATION 1.0
+
+//==============================================
+
+// entity_state_t communication
+
+// try to pack the common update flags into the first byte
+#define U_ORIGIN1 (1 << 0)
+#define U_ORIGIN2 (1 << 1)
+#define U_ANGLE2 (1 << 2)
+#define U_ANGLE3 (1 << 3)
+#define U_FRAME8 (1 << 4) // frame is a byte
+#define U_EVENT (1 << 5)
+#define U_REMOVE (1 << 6)    // REMOVE this entity, don't add it
+#define U_MOREBITS1 (1 << 7) // read one additional byte
+
+// second byte
+#define U_NUMBER16 (1 << 8) // NUMBER8 is implicit if not set
+#define U_ORIGIN3 (1 << 9)
+#define U_ANGLE1 (1 << 10)
+#define U_MODEL (1 << 11)
+#define U_RENDERFX8 (1 << 12) // fullbright, etc
+#define U_EFFECTS8 (1 << 14)  // autorotate, trails, etc
+#define U_MOREBITS2 (1 << 15) // read one additional byte
+
+// third byte
+#define U_SKIN8 (1 << 16)
+#define U_FRAME16 (1 << 17)    // frame is a short
+#define U_RENDERFX16 (1 << 18) // 8 + 16 = 32
+#define U_EFFECTS16 (1 << 19)  // 8 + 16 = 32
+#define U_MODEL2 (1 << 20)     // weapons, flags, etc
+#define U_MODEL3 (1 << 21)
+#define U_MODEL4 (1 << 22)
+#define U_MOREBITS3 (1 << 23) // read one additional byte
+
+// fourth byte
+#define U_OLDORIGIN (1 << 24) // FIXME: get rid of this
+#define U_SKIN16 (1 << 25)
+#define U_SOUND (1 << 26)
+#define U_SOLID (1 << 27)
+
+/*
+==============================================================
+
+CMD
+
+Command text buffering and command execution
+
+==============================================================
+*/
+
+/*
+
+Any number of commands can be added in a frame, from several different sources.
+Most commands come from either keybindings or console line input, but remote
+servers can also send across commands and entire text files can be execed.
+
+The + command line options are also added to the command buffer.
+
+The game starts with a Cbuf_AddText ("exec quake.rc\n"); Cbuf_Execute ();
+
+*/
+
+typedef enum
+{
+    EXEC_NOW    = 0, // don't return until completed
+    EXEC_INSERT = 1, // insert at current position, but don't run yet
+    EXEC_APPEND = 2  // add to end of the command buffer
+} cmd_exec_when_t;
+
+void Cbuf_Init(void);
+// allocates an initial text buffer that will grow as needed
+
+void Cbuf_AddText(const char * text);
+// as new commands are generated from the console or keybindings,
+// the text is added to the end of the command buffer.
+
+void Cbuf_InsertText(const char * text);
+// when a command wants to issue other commands immediately, the text is
+// inserted at the beginning of the buffer, before any remaining unexecuted
+// commands.
+
+void Cbuf_ExecuteText(cmd_exec_when_t exec_when, const char * text);
+// this can be used in place of either Cbuf_AddText or Cbuf_InsertText
+
+void Cbuf_AddEarlyCommands(qboolean clear);
+// adds all the +set commands from the command line
+
+qboolean Cbuf_AddLateCommands(void);
+// adds all the remaining + commands from the command line
+// Returns true if any late commands were added, which
+// will keep the demoloop from immediately starting
+
+void Cbuf_Execute(void);
+// Pulls off \n terminated lines of text from the command buffer and sends
+// them through Cmd_ExecuteString.  Stops when the buffer is empty.
+// Normally called once per frame, but may be explicitly invoked.
+// Do not call inside a command function!
+
+void Cbuf_CopyToDefer(void);
+void Cbuf_InsertFromDefer(void);
+// These two functions are used to defer any pending commands while a map
+// is being loaded
+
+//===========================================================================
+
+/*
+
+Command execution takes a null terminated string, breaks it into tokens,
+then searches for a command or variable that matches the first token.
+
+*/
+
+typedef void (*xcommand_t)(void);
+
+void Cmd_Init(void);
+
+void Cmd_AddCommand(const char * cmd_name, xcommand_t function);
+// called by the init functions of other parts of the program to
+// register commands and functions to call for them.
+// The cmd_name is referenced later, so it should not be in temp memory
+// if function is NULL, the command will be forwarded to the server
+// as a clc_stringcmd instead of executed locally
+void Cmd_RemoveCommand(const char * cmd_name);
+
+qboolean Cmd_Exists(const char * cmd_name);
+// used by the cvar code to check for cvar / command name overlap
+
+const char * Cmd_CompleteCommand(const char * partial);
+// attempts to match a partial command for automatic command line completion
+// returns NULL if nothing fits
+
+int Cmd_Argc(void);
+const char * Cmd_Argv(int arg);
+const char * Cmd_Args(void);
+// The functions that execute commands get their parameters with these
+// functions. Cmd_Argv () will return an empty string, not a NULL
+// if arg > argc, so string operations are always safe.
+
+void Cmd_TokenizeString(const char * text, qboolean macroExpand);
+// Takes a null terminated string.  Does not need to be /n terminated.
+// breaks the string up into arg tokens.
+
+void Cmd_ExecuteString(const char * text);
+// Parses a single line of text into arguments and tries to execute it
+// as if it was typed at the console
+
+void Cmd_ForwardToServer(void);
+// adds the current command line as a clc_stringcmd to the client message.
+// things like godmode, noclip, etc, are commands directed to the server,
+// so when they are typed in at the console, they will need to be forwarded.
+
+/*
+==============================================================
+
+CVAR
+
+==============================================================
+*/
+
+/*
+cvar_t variables are used to hold scalar or string variables that can be changed or
+displayed at the console or prog code as well as accessed directly
+in C code.
+
+The user can access cvars from the console in three ways:
+r_draworder			prints the current value
+r_draworder 0		sets the current value to 0
+set r_draworder 0	as above, but creates the cvar if not present
+Cvars are restricted from having the same names as commands to keep this
+interface from being ambiguous.
+*/
+extern cvar_t * cvar_vars;
+
+cvar_t * Cvar_Get(const char * var_name, const char * value, int flags);
+// creates the variable if it doesn't exist, or returns the existing one
+// if it exists, the value will not be changed, but flags will be ORed in
+// that allows variables to be unarchived without needing bitflags
+
+cvar_t * Cvar_Set(const char * var_name, const char * value);
+// will create the variable if it doesn't exist
+
+cvar_t * Cvar_ForceSet(const char * var_name, const char * value);
+// will set the variable even if NOSET or LATCH
+
+cvar_t * Cvar_FullSet(const char * var_name, const char * value, int flags);
+
+void Cvar_SetValue(const char * var_name, float value);
+// expands value to a string and calls Cvar_Set
+
+float Cvar_VariableValue(const char * var_name);
+// returns 0 if not defined or non numeric
+
+char * Cvar_VariableString(const char * var_name);
+// returns an empty string if not defined
+
+char * Cvar_CompleteVariable(const char * partial);
+// attempts to match a partial variable name for command line completion
+// returns NULL if nothing fits
+
+void Cvar_GetLatchedVars(void);
+// any CVAR_LATCHED variables that have been set will now take effect
+
+qboolean Cvar_Command(void);
+// called by Cmd_ExecuteString when Cmd_Argv(0) doesn't match a known
+// command.  Returns true if the command was a variable reference that
+// was handled. (print or change)
+
+void Cvar_WriteVariables(const char * path);
+void Cvar_WriteVariablesToFile(FILE * f); // [PS2_QUAKE]: what Cvar_WriteVariables appends, to a stream
+// appends lines containing "set variable value" for all variables
+// with the archive flag set to true.
+
+void Cvar_Init(void);
+
+char * Cvar_Userinfo(void);
+// returns an info string containing all the CVAR_USERINFO cvars
+
+char * Cvar_Serverinfo(void);
+// returns an info string containing all the CVAR_SERVERINFO cvars
+
+extern qboolean userinfo_modified;
+// this is set each time a CVAR_USERINFO variable is changed
+// so that the client knows to send it to the server
+
+/*
+==============================================================
+
+NET layer
+
+==============================================================
+*/
+
+// net.h -- quake's interface to the networking layer
+
+enum
+{
+    PORT_ANY = -1,
+    MAX_MSGLEN = 1400, // max length of a message
+    PACKET_HEADER = 10 // two ints and a short
+};
+
+typedef enum
+{
+    NA_LOOPBACK,
+    NA_BROADCAST,
+    NA_IP,
+    NA_IPX,
+    NA_BROADCAST_IPX
+} netadrtype_t;
+
+typedef enum
+{
+    NS_CLIENT,
+    NS_SERVER
+} netsrc_t;
+
+typedef struct
+{
+    netadrtype_t type;
+    byte ip[4];
+    byte ipx[10];
+    unsigned short port;
+} netadr_t;
+
+void NET_Init(void);
+void NET_Shutdown(void);
+void NET_Config(qboolean multiplayer);
+void NET_Sleep(int msec);
+
+qboolean NET_GetPacket(netsrc_t sock, netadr_t * net_from, sizebuf_t * net_message);
+void NET_SendPacket(netsrc_t sock, int length, const void * data, netadr_t to);
+
+qboolean NET_CompareAdr(netadr_t a, netadr_t b);
+qboolean NET_CompareBaseAdr(netadr_t a, netadr_t b);
+qboolean NET_IsLocalAddress(netadr_t adr);
+
+char * NET_AdrToString(netadr_t addr);
+qboolean NET_StringToAdr(const char * s, netadr_t * addr);
+
+//============================================================================
+
+#define OLD_AVG 0.99 // total = oldtotal*OLD_AVG + new*(1-OLD_AVG)
+
+enum
+{
+    MAX_LATENT = 32
+};
+
+typedef struct
+{
+    qboolean fatal_error;
+
+    netsrc_t sock;
+    int dropped; // between last packet and previous
+
+    int last_received; // for timeouts
+    int last_sent;     // for retransmits
+
+    netadr_t remote_address;
+    int qport; // qport value to write when transmitting
+
+    // sequencing variables
+    int incoming_sequence;
+    int incoming_acknowledged;
+    int incoming_reliable_acknowledged; // single bit
+    int incoming_reliable_sequence;     // single bit, maintained local
+
+    int outgoing_sequence;
+    int reliable_sequence;      // single bit
+    int last_reliable_sequence; // sequence number of last send
+
+    // reliable staging and holding areas
+    sizebuf_t message;                 // writing buffer to send to server
+    byte message_buf[MAX_MSGLEN - 16]; // leave space for header
+
+    // message is copied to this buffer when it is first transfered
+    int reliable_length;
+    byte reliable_buf[MAX_MSGLEN - 16]; // unacked reliable message
+} netchan_t;
+
+extern netadr_t net_from;
+extern sizebuf_t net_message;
+extern byte net_message_buffer[MAX_MSGLEN];
+
+void Netchan_Init(void);
+void Netchan_Setup(netsrc_t sock, netchan_t * chan, netadr_t adr, int qport);
+
+void Netchan_Transmit(netchan_t * chan, int length, byte * data);
+void Netchan_OutOfBand(int net_socket, netadr_t adr, int length, byte * data);
+void Netchan_OutOfBandPrint(int net_socket, netadr_t adr, char * format, ...);
+
+qboolean Netchan_Process(netchan_t * chan, sizebuf_t * msg);
+qboolean Netchan_CanReliable(netchan_t * chan);
+qboolean Netchan_NeedReliable(netchan_t * chan);
+
+/*
+==============================================================
+
+CMODEL
+
+==============================================================
+*/
+
+#include "common/q_files.h"
+
+cmodel_t * CM_LoadMap(char * name, qboolean clientload, unsigned * checksum);
+cmodel_t * CM_InlineModel(char * name); // *1, *2, etc
+
+int CM_NumClusters(void);
+int CM_NumInlineModels(void);
+
+// [PS2_QUAKE] 2026-08-29
+// False on a map with no VISIBILITY lump, where CM_ClusterPVS would decompress to
+// all-visible for every cluster. The refresh checks this to take its own
+// mark-everything shortcut instead. See CM_ClusterPVS below.
+qboolean CM_HasVisibility(void);
+
+// The .bsp loaded here right now ("maps/<level>.bsp"), or "" for none. The refresh
+// checks its world model against this, since the two have to be the same map for
+// CM_ClusterPVS to mean anything.
+const char * CM_MapName(void);
+char * CM_EntityString(void);
+
+// creates a clipping hull for an arbitrary box
+int CM_HeadnodeForBox(vec3_t mins, vec3_t maxs);
+
+// returns an ORed contents mask
+int CM_PointContents(vec3_t p, int headnode);
+int CM_TransformedPointContents(vec3_t p, int headnode, vec3_t origin, vec3_t angles);
+
+trace_t CM_BoxTrace(vec3_t start, vec3_t end,
+                    vec3_t mins, vec3_t maxs,
+                    int headnode, int brushmask);
+
+trace_t CM_TransformedBoxTrace(vec3_t start, vec3_t end,
+                               vec3_t mins, vec3_t maxs,
+                               int headnode, int brushmask,
+                               vec3_t origin, vec3_t angles);
+
+// The decompressed (numclusters+7)/8-byte row for one cluster. Each returns a
+// shared static buffer that the next call to the same function overwrites, so
+// copy it if you need two at once. 16-byte aligned, so callers may read it a word
+// at a time. -1 means "outside the map": PVS answers nothing visible, PHS nothing
+// audible. Both are all-visible when the map has no vis data (CM_HasVisibility).
+//
+// [PS2_QUAKE] 2026-08-29
+// The refresh uses CM_ClusterPVS rather than carrying its own copy of the
+// visibility lump in the world hunk - the lump is up to 376 KB and was byte-for-
+// byte the same data. That makes the refresh's PVS depend on cmodel having the
+// same map loaded, which the load order guarantees: SV_SpawnServer runs CM_LoadMap
+// before the client ever reaches CL_PrepRefresh.
+byte * CM_ClusterPVS(int cluster);
+byte * CM_ClusterPHS(int cluster);
+
+int CM_PointLeafnum(vec3_t p);
+
+// call with topnode set to the headnode, returns with topnode
+// set to the first node that splits the box
+int CM_BoxLeafnums(vec3_t mins, vec3_t maxs, int * list,
+                   int listsize, int * topnode);
+
+int CM_LeafContents(int leafnum);
+int CM_LeafCluster(int leafnum);
+int CM_LeafArea(int leafnum);
+
+void CM_SetAreaPortalState(int portalnum, qboolean open);
+qboolean CM_AreasConnected(int area1, int area2);
+
+int CM_WriteAreaBits(byte * buffer, int area);
+qboolean CM_HeadnodeVisible(int headnode, byte * visbits);
+
+void CM_WritePortalState(FILE * f);
+void CM_ReadPortalState(FILE * f);
+
+/*
+==============================================================
+
+PLAYER MOVEMENT CODE
+
+Common between server and client so prediction matches
+
+==============================================================
+*/
+
+extern float pm_airaccelerate;
+void Pmove(pmove_t * pmove);
+
+/*
+==============================================================
+
+FILESYSTEM
+
+==============================================================
+*/
+
+void FS_InitFilesystem(void);
+void FS_SetGamedir(const char * dir);
+void FS_SetDefaultBasePath(const char * path);
+char * FS_Gamedir(void);
+char * FS_NextPath(char * prevpath);
+void FS_ExecAutoexec(void);
+
+int FS_FOpenFile(const char * filename, FILE ** file);
+void FS_FCloseFile(FILE * f);
+// note: this can't be called from another DLL, due to MS libc issues
+
+int FS_LoadFile(const char * path, void ** buffer);
+// a null buffer will just return the file length without loading
+// a -1 length is not present
+
+void FS_Read(void * buffer, int len, FILE * f);
+// properly handles partial reads
+
+void FS_FreeFile(void * buffer);
+void FS_CreatePath(char * path);
+
+// [PS2_QUAKE]: where a file lies, for the background loader (ps2/fs/async_io.h): a descriptor
+// and a byte range, found without reading it. FS_LocateFile returns the file's length or -1, as
+// FS_LoadFile does with a NULL buffer; a found file whose fd is -1 can only be loaded
+// synchronously (the pack's reader descriptor couldn't be opened). The range is the compressed
+// one for FS_LOC_PKZ_DEFLATED, with rawBytes the inflated size. Release it once the read is done:
+// a loose file's stream is held open until then.
+#define FS_LOC_LOOSE        0
+#define FS_LOC_PAK          1
+#define FS_LOC_PKZ_STORED   2
+#define FS_LOC_PKZ_DEFLATED 3
+typedef struct fs_location_s
+{
+    int kind;
+    int fd;
+    unsigned offset;
+    unsigned bytes;
+    unsigned rawBytes;
+    FILE * looseFile;
+} fs_location_t;
+int FS_LocateFile(const char * name, fs_location_t * out);
+void FS_ReleaseLocation(fs_location_t * loc);
+
+/*
+==============================================================
+
+MISC
+
+==============================================================
+*/
+
+#define ERR_FATAL 0 // exit the entire game with a popup window
+#define ERR_DROP  1 // print to console and disconnect from game
+#define ERR_QUIT  2 // not an error, just a normal exit
+
+#define EXEC_NOW    0 // don't return until completed
+#define EXEC_INSERT 1 // insert at current position, but don't run yet
+#define EXEC_APPEND 2 // add to end of the command buffer
+
+#define PRINT_ALL 0
+#define PRINT_DEVELOPER 1 // only print when "developer 1"
+
+void Com_BeginRedirect(int target, char * buffer, int buffersize, void(*flush));
+void Com_EndRedirect(void);
+void Com_DPrintf(const char * fmt, ...) Q_PRINTF_FUNC(1, 2);
+void Com_Quit(void);
+
+int Com_ServerState(void); // this should have just been a cvar...
+void Com_SetServerState(int state);
+
+unsigned Com_BlockChecksum(void * buffer, int length);
+
+// [PS2_QUAKE] 2026-08-29
+// Streaming form of Com_BlockChecksum, for data that is never all in memory at
+// once. Feeding the same bytes produces the same value however they are chunked,
+// which is what lets CM_LoadMap keep hashing the whole .bsp now that it reads the
+// file one lump at a time instead of holding it.
+//
+// Opaque on purpose - the real state is md4.c's MD4_CTX, which checks at compile
+// time that it fits in here. A union rather than a bare byte array so the storage
+// is aligned for the cast: MD4_CTX is words, and MIPS will not load one from an
+// odd address.
+typedef union
+{
+    unsigned char opaque[128];
+    double align_;
+} blockchecksum_t;
+
+void Com_BlockChecksumBegin(blockchecksum_t * ctx);
+void Com_BlockChecksumUpdate(blockchecksum_t * ctx, const void * buffer, int length);
+unsigned Com_BlockChecksumEnd(blockchecksum_t * ctx);
+byte COM_BlockSequenceCRCByte(byte * base, int length, int sequence);
+
+// [PS2_QUAKE]: random numbers for the client effects, which draw several per particle.
+// newlib's rand() is a 64-bit LCG that the R5900, lacking a 64-bit multiply, runs as ~40
+// instructions of shifts and adds; this is the 32-bit LCG and 15-bit result of the MSVC rand()
+// id wrote the effects against. Cosmetic use only - the game code keeps rand().
+extern unsigned int com_fxRandSeed;
+
+static inline int Com_FxRand(void)
+{
+    com_fxRandSeed = com_fxRandSeed * 214013u + 2531011u;
+    return (int)((com_fxRandSeed >> 16) & 0x7fffu);
+}
+
+static inline float frand(void) //  0 to 1
+{
+    return (float)Com_FxRand() * (1.0f / 32767.0f);
+}
+
+static inline float crand(void) // -1 to 1
+{
+    return (float)Com_FxRand() * (2.0f / 32767.0f) - 1.0f;
+}
+
+extern cvar_t * developer;
+extern cvar_t * dedicated;
+extern cvar_t * host_speeds;
+extern cvar_t * log_stats;
+
+extern FILE * log_stats_file;
+
+// host_speeds times
+extern int time_before_game;
+extern int time_after_game;
+extern int time_before_ref;
+extern int time_after_ref;
+
+void Z_Free(void * ptr);
+void * Z_Malloc(int size); // returns 0 filled memory
+void * Z_TagMalloc(int size, int tag);
+void Z_FreeTags(int tag);
+
+void Qcommon_Init(int argc, char ** argv);
+void Qcommon_Frame(int msec);
+void Qcommon_Shutdown(void);
+
+#define NUMVERTEXNORMALS 162
+extern vec3_t bytedirs[NUMVERTEXNORMALS];
+
+// this is in the client code, but can be used for debugging from server
+void SCR_DebugGraph(float value, int color);
+
+/*
+==============================================================
+
+NON-PORTABLE SYSTEM SERVICES
+
+==============================================================
+*/
+
+void Sys_Init(void);
+void Sys_AppActivate(void);
+
+// loads the game dll and calls the api init function
+void * Sys_GetGameAPI(void * parms);
+void Sys_UnloadGame(void);
+
+char * Sys_ConsoleInput(void);
+void Sys_ConsoleOutput(const char * string);
+void Sys_SendKeyEvents(void);
+
+void Sys_Quit(void) Q_COLD_FUNC;
+
+char * Sys_GetClipboardData(void);
+void Sys_CopyProtect(void);
+
+/*
+==============================================================
+
+[PS2_QUAKE]: SAVE GAME STORAGE (src/ps2/save/)
+
+id's save/current/ directory is a working set kept in RAM, and each save
+slot is one archive file on the save device ps2_savedevice picks: the
+memory card ("mc", the default), or <gamedir>/save/ on the drive the game
+booted from ("host", "usb" or "hdd"). The save file names and contents are
+still id's; only where they live changed.
+
+Every read and write of the save device goes under the save notice, the
+"Data is being saved to the Memory Card in slot 1. Do not remove the
+Memory Card or reset/switch off the console." PS2 games show, up for a
+second at least (src/ps2/save/save_notice.h).
+
+Everything that can fail records a line for the player, which
+Sys_SaveLastError returns.
+
+==============================================================
+*/
+
+// A working set file ("base1.sav", "server.ssv", ...) as a stdio stream,
+// "rb" or "wb". A written file replaces the old one only when closed with
+// keep = true and all of it made it; Sys_SaveClose returns whether it did
+// (for a read, whether all of it checked out).
+FILE * Sys_SaveOpen(const char * name, const char * mode);
+qboolean Sys_SaveClose(FILE * f, qboolean keep);
+qboolean Sys_SaveExists(const char * name);
+void Sys_SaveClearCurrent(void);
+
+// Closes any save stream still open, discarding writes, and takes the save
+// notice down if it is up: an error drop unwinds past the code that opened
+// them.
+void Sys_SaveAbortStreams(void);
+
+// Copies the working set to a save slot, and back, under the save notice.
+// Restoring reads and checks the whole slot before it replaces the working set.
+qboolean Sys_SaveStoreSlot(const char * slot, const char * comment);
+qboolean Sys_SaveRestoreSlot(const char * slot);
+
+// The save notice around a save the server writes into the working set
+// first (SV_Savegame_f), so that it is up before the game stands still:
+// false, with Sys_SaveLastError saying why, if the save device can't be
+// used. Sys_SaveStoreSlot finds it up.
+qboolean Sys_SaveNoticeBegin(qboolean saving);
+void Sys_SaveNoticeEnd(void);
+
+typedef enum
+{
+    SAVESLOT_EMPTY,
+    SAVESLOT_VALID,
+    SAVESLOT_CORRUPT,
+    SAVESLOT_INCOMPATIBLE // written by a build with a different save format
+} saveslotstate_t;
+
+typedef struct
+{
+    saveslotstate_t state;
+    char comment[32];
+} saveslotinfo_t;
+
+// The slots named <prefix>0 .. <prefix><count - 1>, for the load/save
+// menus, under the save notice. False, with every slot empty, if the save
+// device can't be used: until a listing works, Sys_SaveMenuProblem is true
+// then, and Sys_SaveMenuDrawProblem draws why over the menu, with how to use
+// the other device.
+qboolean Sys_SaveListSlots(const char * prefix, int count, saveslotinfo_t * info);
+qboolean Sys_SaveMenuProblem(void);
+void Sys_SaveMenuDrawProblem(void);
+
+qboolean Sys_SaveTargetIsCard(void);     // Saves go to the memory card, not the boot drive.
+const char * Sys_SaveDeviceName(void);   // Where saves go: "memory card", "USB drive", "hard disk", "host files".
+const char * Sys_SaveDriveName(void);    // The boot drive's name: the Game menu's other save device.
+void Sys_SaveUseCard(qboolean card);     // The Game menu's save device: the card, or the boot drive.
+const char * Sys_SaveDeviceStatus(void); // Where saves go, or why they can't, for the menus.
+const char * Sys_SaveSwitchAdvice(void); // How to use the other device instead, for a failure's message box.
+
+void Sys_SaveSetError(const char * message);
+const char * Sys_SaveLastError(void);
+
+// config.cfg, which CL_WriteConfiguration puts together and Cmd_Exec_f runs,
+// lives with the saves:
+//
+// Writing  - to the save device: the memory card's save folder, or
+//            <gamedir>/config.cfg on the boot drive. Switching from the drive
+//            back to the card rewrites the drive's once more, so that it no
+//            longer names the drive. Running from the emulator's host:,
+//            <gamedir>/config.cfg is always written.
+// Reading  - on a console, the boot drive's <gamedir>/config.cfg when it says
+//            saves go to that drive, and the card isn't touched; otherwise the
+//            card's, the drive's only if the card has none. From the emulator,
+//            the host:/ file first (the one edited by hand while developing),
+//            the card's if there is none.
+//
+// The save device's copy is written under the save notice, and the card's
+// read under it; an unchanged config isn't written again. Sys_SaveLoadConfig
+// returns the file the way FS_LoadFile does: *outLength bytes with no
+// terminating 0, in a buffer FS_FreeFile frees - or NULL if there is no
+// config.cfg anywhere.
+void Sys_SaveStoreConfig(const char * text, int length);
+char * Sys_SaveLoadConfig(int * outLength);
+
+/*
+==============================================================
+
+CLIENT / SERVER SYSTEMS
+
+==============================================================
+*/
+
+void CL_Init(void);
+void CL_Drop(void);
+void CL_Shutdown(void);
+void CL_Frame(int msec);
+void Con_Print(char * text);
+void SCR_BeginLoadingPlaque(void);
+
+// [PS2_QUAKE]: Client-side feedback the server gives the player about saving and loading.
+// M_Popup shows a message box over everything, until any button is pressed. See menu.c.
+void M_Popup(const char * title, const char * text);
+void SCR_CenterPrint(const char * str);
+
+// [PS2_QUAKE] 2026-08-29
+// Frees the refresh's world model before the next map is built, unless it is
+// already the one named. See the definition in cl_view.c; SV_SpawnServer is the
+// only caller.
+void CL_ReleaseWorldModel(const char * bsp_name);
+
+void SV_Init(void);
+void SV_Shutdown(char * finalmsg, qboolean reconnect);
+void SV_Frame(int msec);
+
+// [PS2_QUAKE]: For Com_Error's drop: whether it interrupted reading a save game back, which
+// the player is then told about. Clears that state. See sv_ccmds.c.
+qboolean SV_AbortSaveRead(void);
+
+#endif // Q_COMMON_H
