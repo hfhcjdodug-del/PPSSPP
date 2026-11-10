@@ -1,0 +1,191 @@
+---
+paths:
+  - "src/ps2/audio/**"
+  - "src/tools/host/musenc.cpp"
+---
+
+# Audio and CD music
+
+The README's "Sound" section covers `AudsrvDevice` and `MixRing`. The decisions and
+measurements behind CD music (`cd_audio.cpp`, `music_stream.*`, `spu_adpcm.h`,
+`tools/host/musenc.cpp`, `make music`):
+
+- **Format (the user's choice):** SPU2 ADPCM, 22050 Hz stereo (= `dma.speed`, so no
+  resampling), 2048-byte chunk interleave so the files stay SPU2-voice-streamable later, and a
+  2 KB `"Q2MU"` v1 header. Files are `baseq2/music/trackNN.adp`, always lowercase. The
+  soundtrack's 10 WAVs (289 MB) encode to 41.36 MB, at 26-42 dB SNR (dense tracks lowest).
+  musenc does the exact 2:1 decimation itself (255-tap Kaiser sinc). `spu_adpcm.h` is shared
+  by game and encoder, so it uses `<cstdint>`.
+- **Pipeline (the user's choice): decode on the EE**, not IOP → SPU2 voices. ps2snd.irx is
+  buggy: it re-reads the header as ADPCM, `DeleteThread`s itself at EOF, and doesn't loop. And
+  audsrv owns SPU2 core 1 and zeroes core 0's MVOL. A hardware-voice path means a custom IRX,
+  which is deferred.
+- **Mechanics:** two read buffers from `TryAllocAligned(64)` under `MemTag::Music`, allocated
+  when a track opens and freed when it closes (the loading plaque stops music, so they are never
+  held across a level load), each filled by a background-loader request (fs/async_io.h) at
+  `Priority::Stream`, submitted the moment the decode side releases it and polled when decode
+  comes back round (plan §12.1, 2026-10-29; a reader thread of its own at the main thread's
+  priority before). ADPCM requests are 32 KB, one loader chunk, ~1.3 s: the 2 KB header leaves
+  every stereo group 2 KB off a 4 KB boundary, so each request crosses one 32 KB boundary of the
+  file and takes two reads, against five per 32 KB for the old 8 KB requests. Requests are
+  marked `sequential`, so the loader skips the lseek between them. A request the loader declines
+  (`ps2_aio 0`, every slot taken) is read on the main thread when decode needs it. Decode tops `s_rawsamples` up to `paintedtime + 7680` in `CDAudio_Update` (after
+  `S_Update`), through the cinematics' raw-sample channel, so it costs no extra SIF bandwidth.
+  The loop to the ambient track uses stream pass counts, and the wraps are seamless (verified
+  bit-exact on target by hash). Behaviour follows id's `cd_win.c` (`cd_loopcount`,
+  `cd_looptrack`).
+- **A main-thread file call waits out a music read.** The SDK file client and the IOP's file
+  server take one request at a time. So anything the main thread reads or writes while the
+  music's read is out waits for it, and on a console USB drive that took ~300 ms (the reader
+  thread's 8 KB reads, 2026-10-10). The USB
+  keyboard poll is a `read()` on `usbkbd:dev` every frame. A 2026-10-10 console capture showed
+  it stalling a frame every 640 ms: 83 s of 171 s of gameplay. It now skips while
+  `aio::Pending()` (the music's reads are loader requests since 2026-10-29; `MusicReadPending()`
+  covered them before), and the driver keeps the keys queued until then. A console run
+  with the keyboard off confirmed the cause, and one with it on and these fixes confirmed the
+  cure: no stalls either way. A third, with the music on the loader, showed none either
+  (2026-10-29, performance.md). It also polls
+  only four times a second unless a key arrived in the last 10 s or is held (keyboard.h), and
+  `in_keyboard` is off by default in release builds. Keep any other per-frame file I/O off the
+  main thread the same way. PCSX2's `host:` reads are too quick to show it. In PCSX2 a
+  per-frame poll cost ~86 µs; with the idle polling the Input column averages 27 µs, against
+  20 µs for the pad alone.
+- **On the HDD, the submit waits out another thread's read.** `audsrv_available` and
+  `audsrv_play_audio` are synchronous RPCs, and on the IOP audsrv's RPC thread shares priority 40
+  with fileXio's, with no time slicing. From the HDD a read in flight on the loader or the music
+  reader (now a loader client too) held them 8-44 ms in 2% of the rows with a read (console, 2026-10-28; performance.md);
+  from USB never. It never empties the ring, but costs a field. Since 2026-10-29 snd.cpp holds
+  the submit back while `aio::FileCallInFlight()` (`|| MusicReadPending()` until §12.1), if the last submit is
+  under 30 ms old (one 50 Hz frame), on the HDD only (`ps2_sound_defer`; plan §12.4). Forced on in
+  a throttled PCSX2 run it held 38% of ntro's submits, never two in a row, and the ring's lowest
+  point matched the run without it. On the console from the HDD (2026-10-29) the stalls went from
+  66 to 38 over the perf run (gameplay 9 → 2), 96% of the holds were enough, and the pickups no
+  longer drop a field; what is left is reads longer than the hold. With the music's 32 KB
+  requests on the loader (§12.1) those became 13 blocked gameplay submits, so **since 2026-10-30
+  the submit runs on a thread of its own** (`submit_thread.{h,cpp}`, `ps2_sound_async`, plan
+  §12.4), one priority above the main thread (0; main is 1, from ps2sdk's `InitThread`, whose
+  kernel helper thread also sits at 0). The main thread posts the painted range and collects the
+  result next frame; the submit cursor moves only there. **Not a `SIF_RPC_M_NOWAIT` call:**
+  audsrv's IOP server has one receive buffer (`rpc_buffer`, rpc_server.c), and SIF RPC DMAs a
+  request's data into it when the request is sent, so two requests out at once can overwrite
+  each other; the SDK client serialises them with `completion_sema`. On the console from the HDD
+  (2026-10-31, performance.md) no submit blocks any more, but the thread's own RPCs still waited:
+  timed (`sndQuery`/`sndPlay`), the free-space query waited up to 65 ms behind a loader read,
+  the play call almost never, and the time between top-ups then neared the ring's ~96 ms; the
+  user heard it at the railgun pickup. **ps2sdk's audsrv creates its RPC thread at a literal 40**
+  (`rpc_server.c`), fileXio's priority, and the IOP has no time slicing, so a request waits out
+  any read in progress (its play thread, 39, is unaffected: dev9's DMA spin runs with interrupts
+  on). **The boot starts audsrv with `thpri=39`**, its RPC thread one above fileXio's: the
+  slowest free-space call of a console HDD run went 65.4 → 0.53-0.64 ms and sends still out at
+  the next frame 77 → 1 (performance.md). The argument went into ps2sdk as PR #952 (in
+  `d41ea62`, CI's pin since 2026-11-04); from 2026-11-01 until then the game built its own copy
+  of audsrv with the same change, and before that a boot-time patch of the SDK's image (its one
+  `li a1,40`, `.text` 0x11b0) measured the same. An audsrv older than `d41ea62` ignores the
+  argument and stays at 40. Its ring is `feed_size * 10` (`audsrv_set_format`) though the static
+  buffer is 20480 bytes; a longer ring would cost latency. Its first USB runs froze at the end of
+  base2's load, with `ps2_sound_async 0` too: that ELF was built without
+  `PS2_QUAKE_ALWAYS_RESET_IOP=1`, so it ran on the launcher's usbhdfsd, the known freeze
+  (ps2-platform.md), not the thread. Anything else that calls
+  `AudsrvDevice` from the main thread (hold, release, silence, restart, shutdown) must
+  `SubmitThread::Wait` first: `Enqueue` writes the device's `m_held`/`m_silent`.
+- **audsrv loops its ring through an underrun.** Its IOP play thread advances the read cursor
+  whether or not anything was written (audsrv.c's `play_thread`), so a main loop that stops
+  submitting for longer than the ring (10 feed blocks: 9400 bytes, ~106 ms at 22050 Hz) gets
+  the last 106 ms played over and over. That was the stutter on saves, config writes and
+  level changes from USB; the user heard it as the music stuttering. Pausing the music alone
+  can't fix it. `AudsrvDevice::Hold` plays the queue out with silence until a whole ring has
+  been rewritten, then `audsrv_stop_audio()` (which renders zeros and freezes the read cursor).
+  Stopped, the ring is full, and only `audsrv_play_audio` restarts it, so `Release` calls
+  `audsrv_set_format` again to reset the cursors with half the ring free. While held,
+  `SNDDMA_Submit` sends nothing. The submit cursor is the mixer's play position, so the mixer
+  stops a mixahead ahead and the music ring stops filling, and both resume on the same sample.
+  Holds: the save notice, for as long as it is up (`save/save_notice.cpp`: every read and write
+  of a save device, a save's from before the level-file compression on), and the plaque's
+  lifetime (`PS2_LoadingScreenBegin/End`, timeout included). `SCR_BeginLoadingPlaque` also
+  silences the output at once, for loads that skip the plaque (the console down, a new game
+  between servers). It runs several times per load, so the device tracks whether only silence
+  went in since its last flush and then stops without one. Verified in PCSX2 (`ps2_testsaves 2`,
+  with temporary prints): every flush took 54-106 ms, audio came back after every release, and
+  each load paid one flush. On a console with USB data the user found it much better
+  (2026-10-11).
+- **Fading the music out ahead of the save notice's hold (`cd_audio.h`, brought over from the
+  Quake port, 2026-10-23):** the hold above stops the music dead where audsrv's queue ends, and
+  starts it again just as abruptly. `HoldMusic` fades out what is already queued in
+  `s_rawsamples` in place, ahead of the mixer (300-350 ms of it: the pump keeps the ring up to
+  7680 frames ahead of `paintedtime`), so nothing decoded is dropped and `ReleaseMusic` picks up where
+  the fade ended. The fade is 500 ms, or as long as what is queued if that is longer: past the
+  queued frames the pump decodes on, the ramp laid over what it stores, and stores nothing past
+  the fade's end. `HoldMusic` then paints the mix itself (`S_Update_`, every 5 ms) until
+  `soundtime`, the submit cursor, is past the fade's end, so all of it has gone to audsrv; the
+  hold that follows plays audsrv's queue out before it stops it. A held output (the plaque's)
+  takes nothing from the mixer, so then there is no fade. `ReleaseMusic` arms a 1 s fade-in,
+  laid on the first frames stored after it; closing the track drops it, so a load's new track
+  starts at full volume. Sound effects aren't faded: they play on through the fade, then the hold
+  cuts them.
+- **What the mixer has painted ahead (`s_mixahead`, 0.2 s here, 0.1 s in the Quake port) plays at
+  full volume before the fade begins**, and the fade starts at `paintedtime`. So `HoldMusic`'s
+  wait is the lead plus the fade: 564-688 ms for a 500 ms fade over the save test's notices
+  (PCSX2, debug, base1's track, 2026-10-23), with 6000-7400 of the fade's 11025 frames queued
+  already. The lead also covers the main thread until the fade begins; `BeginSaveNotice` tops
+  the mix up (`audio::MixAhead`) before the probe (whose first card access of a session starts
+  MCMAN and MCSERV) and before the notice's frame.
+- **The fade's gain** is Q14, applied as `((v >> 8) * g) >> 6`: a ring sample is 16 bits times
+  up to 256 (`kUnityGain`), so the product stays under 2^29. The Quake port's host harness
+  checked the same code (UBSan with `-fsanitize=integer`, 180 cases across the ring's wrap):
+  within the gain's 1/16384, monotonic, ending 1/8192 from silence.
+- **WAV fallback (the user's request, for whoever skips `make music`):** per search directory,
+  `trackNN.adp`, then `trackNN.wav`, then `Track%02d.wav` (as `make music` accepts; FAT and
+  macOS hosts ignore case anyway). The format comes from the header (`"Q2MU"` or RIFF/WAVE),
+  not the extension. Only a *missing* file falls through: one that is malformed or can't get
+  its buffers (`OpenResult::Unusable`) is reported once and leaves the track silent. WAV is
+  16-bit PCM, mono or stereo, 4-48 kHz, walked chunk by chunk (LIST etc. skipped,
+  `WAVE_FORMAT_EXTENSIBLE` read, data length clamped to the file size). Buffers grow with the
+  byte rate: ~3/8 s each in 4 KB pages, 8-64 KB, so a 44.1 kHz stereo rip holds 2 × 64 KB
+  (vs 2 × 8 KB for ADPCM).
+- **Rate conversion** (in `cd_audio.cpp`, for any format): equal rates copy straight in;
+  exactly double goes through `half_band.h`; anything else through the linear resampler. The
+  half-band is 23 taps, Kaiser beta 6.8, Q14 `{5103, -1425, 591, -232, 72, -13}` around a 0.5
+  centre: -0.14 dB at 8 kHz, -6 dB at the new Nyquist (inherent), ≥67 dB down for anything
+  that folds below 7 kHz. Shorter filters measured: 11 taps -40 dB, 15 taps -50 dB above
+  15 kHz. **Codegen:** both channels in one loop spilled (46 live samples, 113 instructions
+  per output frame); one channel at a time with the taps spelled out (`-O2` leaves a loop over
+  them rolled, reloading each tap) is ~49 per channel. A host harness (ASan + UBSan, `-O1`,
+  `-O3` and `-fsanitize=implicit-conversion,integer`) fuzzes the API with the uncommitted input
+  poisoned, checks every output bit-exact against an int64 convolution, and drives the
+  accumulator to its peak: ±755,749,620, 35% of int32.
+- **Cost (PCSX2, debug), Music event:** ADPCM about 138 µs per frame mean (171 µs p50); that
+  came from keeping the ADPCM history in locals (to dodge `-fno-strict-aliasing` spills) and
+  unrolling per byte. A 44.1 kHz WAV about 274 µs mean (348 µs p50), the decimator being most
+  of it. SndMix dropped by 60 µs when music arrived (it copies the ring instead of a memset).
+  0 dropped frames either way. Moving the reads to the loader (2026-10-29) took 8 KB off .bss
+  (the reader's static stack) and 272 bytes off .text; the stream object is 384 bytes of .data.
+- **Verified on target by hash** (scripted, no map needed: music plays at the console): ADPCM
+  wraps; a 44.1 kHz WAV looped 3 passes through the decimator; an extensible mono 22 kHz WAV
+  with an oversized data length; a forced allocation failure (warning, silence, no leak); and
+  `.adp` winning over a `.wav` beside it. Re-run for the loader move (2026-10-29), against HEAD built
+  beside the tree: a temporary patch to cd_audio.cpp wrapped the three `s_stream.Decode` calls in
+  an FNV-1a hash of every frame, printed at each multiple of `FrameCount()`, and walked tracks
+  90-93 itself from `CDAudio_Update` (3 passes each with `cd_loopcount 3`, `alias d1 ""`, then
+  `quit`); synthetic files from a Python sine-plus-noise WAV writer and `musenc` (a 5.37 s stereo
+  `.adp` ending in a part request, a 3.13 s 44.1 kHz stereo WAV, a 2.71 s extensible mono WAV
+  with a LIST chunk and an oversized data length, a `.adp` beside a `.wav`). All 12 pass hashes
+  matched HEAD, with the loader and with `ps2_aio 0`. Run such an ELF from a short path (under
+  `build/`): from the scratchpad's long one PCSX2 died in the kernel before `main`.
+- **Mid-level sound effects load in the background** (`sound_load.{h,cpp}`, 2026-10-26, stage 4 of
+  the background-loading plan): `S_LoadSound` outside registration submits the WAV to `ps2::aio`
+  at `Priority::Sound` into a 64-aligned staging buffer (tag `Aio`, 8 in flight at most), and
+  `aio::Pump` at the top of `PS2_BeginFrame` finishes it (`S_FinishLoadSound`: GetWavinfo,
+  `PS2_AudioMalloc`, `ResampleSfx`) so the same frame's `S_Update` mixes it. A playsound for a
+  sound still loading waits in the pending list, retried every 10 ms for half a second
+  (`playsound_t::deadline`), then is dropped. In the PCSX2 perf run throttled to a USB stick's
+  rate, `rg_hum.wav` (the one mid-level sound of the run) opened on frame 5012 and was ready on
+  5017, its row's FsIo gone. On the console from USB (2026-10-27) the same sound was ready 5
+  frames after its request, its row 146.8 → 0.5 ms of ClParse. The level-load path and
+  `S_EndRegistration` are unchanged.
+- Audio bring-up failure is not fatal (`ps2_disable_sound 1` turns it off on purpose). The
+  libsd/audsrv IRX load is one-shot.
+
+**After music changes:** re-run `ps2_perftest` (compare the Music event with
+`build/baselines/cdmusic-on4.flog` for ADPCM, `cdwav-on.flog` for WAV) and a MapCycle
+(`mapcycle-cdmusic2.summary.txt` for ADPCM, `mapcycle-cdwav.summary.txt` with the `.adp`
+files moved out). Scripted music tests hit the traps in `testing-pcsx2.md`.

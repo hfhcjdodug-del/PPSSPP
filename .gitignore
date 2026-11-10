@@ -1,0 +1,34 @@
+# Build artifacts not submitted:
+*.elf
+*.o
+*.a
+*.d
+
+# VU microprogram intermediates:
+*.pp.vcl
+*.vsm
+
+# Everything under build/ is generated - the per-config object trees and ELFs,
+# the host tool binaries, the bin2c IRX intermediates. dummy.txt is only there
+# to keep the directory in the repo.
+build/*
+!build/dummy.txt
+
+# Quake2 game asset files, not part of this repository.
+# Keep the default config file loaded at startup and saved by Quake2 on quit.
+baseq2/*
+!baseq2/config.cfg
+
+# Release packages made by src/tools/scripts/make_github_release.sh:
+github_rel_*/
+
+# Generated per-machine editor tooling:
+compile_commands.json
+
+# MacOS stuff:
+.DS_Store
+
+# Clangd source code parsing caches.
+.cache
+mobile/yquake2/release/
+mobile/yquake2/build/
